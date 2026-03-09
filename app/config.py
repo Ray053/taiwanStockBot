@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     # FinMind
     finmind_api_token: str = Field(default="")
 
-    # LINE Notify
-    line_notify_token: str = Field(default="")
+    # LINE Messaging API
+    line_channel_access_token: str = Field(default="")
+    line_user_id: str = Field(default="")  # User ID or Group ID to push messages to
 
     # Telegram
     telegram_bot_token: str = Field(default="")

@@ -1,4 +1,4 @@
-"""LINE Notify + Telegram Bot notification service."""
+"""LINE Messaging API + Telegram Bot notification service."""
 import logging
 
 import httpx
@@ -24,25 +24,33 @@ def _format_message(top_scores: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def send_line_notify(message: str) -> bool:
-    """Send notification via LINE Notify."""
-    token = settings.line_notify_token
-    if not token or token == "your_line_notify_token":
-        logger.info("LINE Notify token not configured, skipping.")
+def send_line_message(message: str) -> bool:
+    """Send notification via LINE Messaging API (push message)."""
+    token = settings.line_channel_access_token
+    user_id = settings.line_user_id
+
+    if not token or not user_id:
+        logger.info("LINE Messaging API credentials not configured, skipping.")
         return False
 
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
             resp = client.post(
-                "https://notify-api.line.me/api/notify",
-                headers={"Authorization": f"Bearer {token}"},
-                data={"message": message},
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "to": user_id,
+                    "messages": [{"type": "text", "text": message}],
+                },
             )
             resp.raise_for_status()
-            logger.info("LINE Notify sent successfully")
+            logger.info("LINE message sent successfully")
             return True
     except Exception as e:
-        logger.error(f"LINE Notify error: {e}")
+        logger.error(f"LINE Messaging API error: {e}")
         return False
 
 
@@ -74,5 +82,5 @@ def send_top_scores_notification(top_scores: list[dict]) -> None:
         return
 
     message = _format_message(top_scores)
-    send_line_notify(message)
+    send_line_message(message)
     send_telegram(message)
