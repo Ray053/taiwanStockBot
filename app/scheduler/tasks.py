@@ -41,7 +41,7 @@ def sync_stocks():
             stock_name = r.get("stock_name") or r.get("CompanyName") or ""
             industry = r.get("industry_category") or r.get("IndustryCategory") or ""
 
-            if not stock_id:
+            if not stock_id or not str(stock_id).isdigit() or not (4 <= len(str(stock_id)) <= 6):
                 continue
 
             db.execute(
