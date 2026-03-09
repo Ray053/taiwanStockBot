@@ -145,8 +145,12 @@ def compute_signals():
                     continue
 
                 df = pd.DataFrame(records)
-                if "date" in df.columns:
-                    df = df.rename(columns={"date": "trade_date"})
+                df = df.rename(columns={
+                    "date": "trade_date",
+                    "Trading_Volume": "volume",
+                    "max": "high",
+                    "min": "low",
+                })
                 df = enrich_kline_df(df)
 
                 for _, row in df.iterrows():
