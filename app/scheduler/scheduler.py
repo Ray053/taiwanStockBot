@@ -5,6 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.scheduler.tasks import (
+    sync_stocks,
     fetch_polymarket,
     fetch_institutional,
     compute_signals,
@@ -20,6 +21,15 @@ TIMEZONE = "Asia/Taipei"
 
 def create_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
+
+    # 每週日 02:00 — Sync all TWSE stocks from FinMind
+    scheduler.add_job(
+        sync_stocks,
+        trigger=CronTrigger(day_of_week="sun", hour=2, minute=0, timezone=TIMEZONE),
+        id="sync_stocks",
+        name="Sync all TWSE stocks from FinMind",
+        replace_existing=True,
+    )
 
     # 06:00 — Fetch Polymarket macro snapshot
     scheduler.add_job(

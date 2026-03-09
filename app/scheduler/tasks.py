@@ -1,5 +1,6 @@
 """Scheduled task functions."""
 import logging
+import time
 from datetime import date, timedelta
 
 from sqlalchemy import text
@@ -13,24 +14,57 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Target stocks to track (can be extended or loaded from DB)
+# Fallback stock list if DB is empty
 DEFAULT_STOCK_IDS = [
-    "2330",  # 台積電
-    "2317",  # 鴻海
-    "2454",  # 聯發科
-    "2308",  # 台達電
-    "2412",  # 中華電
-    "2882",  # 國泰金
-    "2886",  # 兆豐金
-    "2881",  # 富邦金
-    "2603",  # 長榮
-    "2609",  # 陽明
-    "1301",  # 台塑
-    "1303",  # 南亞
-    "3711",  # 日月光投控
-    "2357",  # 華碩
-    "2382",  # 廣達
+    "2330", "2317", "2454", "2308", "2412",
+    "2882", "2886", "2881", "2603", "2609",
+    "1301", "1303", "3711", "2357", "2382",
 ]
+
+# Rate limit: seconds between each stock API call (avoid being blocked)
+RATE_LIMIT_DELAY = 0.5
+
+
+def sync_stocks():
+    """Weekly — Fetch all TWSE listed stocks from FinMind and upsert into stocks table."""
+    logger.info("Task: sync_stocks started")
+    db = SessionLocal()
+    try:
+        records = finmind_client.fetch_stock_info()
+        if not records:
+            logger.warning("Task: sync_stocks — no data returned from FinMind")
+            return
+
+        count = 0
+        for r in records:
+            stock_id = r.get("stock_id") or r.get("StockID")
+            stock_name = r.get("stock_name") or r.get("CompanyName") or ""
+            industry = r.get("industry_category") or r.get("IndustryCategory") or ""
+
+            if not stock_id:
+                continue
+
+            db.execute(
+                text("""
+                    INSERT INTO stocks (stock_id, stock_name, sector, market, is_active)
+                    VALUES (:stock_id, :stock_name, :sector, 'TWSE', TRUE)
+                    ON CONFLICT (stock_id)
+                    DO UPDATE SET
+                        stock_name = EXCLUDED.stock_name,
+                        sector     = EXCLUDED.sector,
+                        is_active  = TRUE
+                """),
+                {"stock_id": stock_id, "stock_name": stock_name, "sector": industry},
+            )
+            count += 1
+
+        db.commit()
+        logger.info(f"Task: sync_stocks done. Upserted {count} stocks.")
+    except Exception as e:
+        logger.error(f"Task: sync_stocks error: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def fetch_polymarket():
@@ -87,6 +121,7 @@ def fetch_institutional():
             except Exception as e:
                 logger.error(f"fetch_institutional error for {stock_id}: {e}")
                 db.rollback()
+            time.sleep(RATE_LIMIT_DELAY)
 
         logger.info("Task: fetch_institutional done")
     finally:
@@ -120,6 +155,7 @@ def compute_signals():
             except Exception as e:
                 logger.error(f"compute_signals error for {stock_id}: {e}")
                 db.rollback()
+            time.sleep(RATE_LIMIT_DELAY)
 
         logger.info("Task: compute_signals done")
     finally:
