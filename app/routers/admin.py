@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.services import scoring_engine, polymarket_client
 from app.models.macro_snapshot import MacroSnapshot
+from app.scheduler.tasks import sync_stocks
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,17 @@ def trigger_score(
         }
     except Exception as e:
         logger.error(f"trigger-score error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sync-stocks")
+def trigger_sync_stocks(_: str = Depends(verify_api_key)):
+    """Manually trigger syncing all TWSE stocks from FinMind into the stocks table."""
+    try:
+        sync_stocks()
+        return {"status": "ok", "message": "Stock sync completed. Check logs for details."}
+    except Exception as e:
+        logger.error(f"sync-stocks error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
