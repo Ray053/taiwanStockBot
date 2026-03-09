@@ -21,7 +21,7 @@ def run_migrations():
     """Run alembic upgrade head on startup."""
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            ["alembic", "upgrade", "head"],
             capture_output=True,
             text=True,
             timeout=60,
