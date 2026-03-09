@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.services import scoring_engine, polymarket_client
 from app.models.macro_snapshot import MacroSnapshot
-from app.scheduler.tasks import sync_stocks
+from app.scheduler.tasks import sync_stocks, compute_signals
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,50 @@ def trigger_sync_stocks(_: str = Depends(verify_api_key)):
     except Exception as e:
         logger.error(f"sync-stocks error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/compute-signals")
+def trigger_compute_signals(
+    stock_ids: list[str] = None,
+    _: str = Depends(verify_api_key),
+):
+    """Manually trigger K-line fetch and signal computation.
+    Pass stock_ids to limit scope (e.g. ['2330','2317']). Omit for all active stocks."""
+    import threading
+    def run():
+        if stock_ids:
+            from app.scheduler.tasks import SessionLocal, finmind_client, enrich_kline_df, _upsert_kline, RATE_LIMIT_DELAY
+            import time
+            from datetime import date, timedelta
+            import pandas as pd
+            today = date.today()
+            start = (today - timedelta(days=90)).strftime("%Y-%m-%d")
+            end = today.strftime("%Y-%m-%d")
+            db = SessionLocal()
+            try:
+                for sid in stock_ids:
+                    try:
+                        records = finmind_client.fetch_stock_price(sid, start, end)
+                        if not records:
+                            continue
+                        df = pd.DataFrame(records)
+                        if "date" in df.columns:
+                            df = df.rename(columns={"date": "trade_date"})
+                        df = enrich_kline_df(df)
+                        for _, row in df.iterrows():
+                            _upsert_kline(db, sid, row)
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"compute-signals error for {sid}: {e}")
+                        db.rollback()
+                    time.sleep(RATE_LIMIT_DELAY)
+            finally:
+                db.close()
+        else:
+            compute_signals()
+    threading.Thread(target=run, daemon=True).start()
+    scope = stock_ids if stock_ids else "all active stocks"
+    return {"status": "ok", "message": f"compute_signals started in background for {scope}"}
 
 
 @router.post("/refresh-polymarket")
