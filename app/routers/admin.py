@@ -1,7 +1,7 @@
 import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -58,7 +58,7 @@ def trigger_sync_stocks(_: str = Depends(verify_api_key)):
 
 @router.post("/compute-signals")
 def trigger_compute_signals(
-    stock_ids: list[str] = None,
+    stock_ids: list[str] = Body(default=None),
     _: str = Depends(verify_api_key),
 ):
     """Manually trigger K-line fetch and signal computation.
