@@ -10,7 +10,7 @@
 
 - **多因子評分** — 技術面 + 法人籌碼 + 融資融券 + Polymarket 宏觀信號
 - **每日自動排程** — APScheduler 定時抓資料、算分、推播
-- **LINE Notify 推播** — 收盤後自動傳送 Top 10 選股
+- **LINE Messaging API 推播** — 收盤後自動傳送 Top 10 選股
 - **REST API** — FastAPI 提供完整查詢介面
 - **全 Docker 化** — 一行指令啟動所有服務
 
@@ -26,7 +26,7 @@
 | ORM / Migration | SQLAlchemy 2 + Alembic |
 | 排程 | APScheduler (Asia/Taipei) |
 | 資料來源 | FinMind REST API、Polymarket Gamma API |
-| 推播 | LINE Notify |
+| 推播 | LINE Messaging API |
 | 容器化 | Docker Compose |
 
 ---
@@ -66,7 +66,8 @@ curl http://localhost:8000/api/v1/health
 | 變數 | 說明 | 取得方式 |
 |------|------|---------|
 | `FINMIND_API_TOKEN` | FinMind API Token | [finmindtrade.com](https://finmindtrade.com) 免費註冊 |
-| `LINE_NOTIFY_TOKEN` | LINE Notify Token | [notify-bot.line.me/my](https://notify-bot.line.me/my/) → 發行權杖 |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API Channel Access Token | [LINE Developers](https://developers.line.biz/) → Messaging API → Channel access token |
+| `LINE_USER_ID` | 接收推播的 User ID 或 Group ID | LINE Developers Console → Basic settings → Your user ID |
 | `ADMIN_API_KEY` | 管理介面保護密鑰 | 自行設定任意強密碼 |
 
 > 其餘 DB / Redis 連線設定已預設指向 Docker 內部服務，不需修改。
@@ -113,7 +114,7 @@ Base URL: `http://localhost:8000/api/v1`
 | 08:30 | 抓取三大法人、融資融券資料 |
 | 09:05 | 計算技術指標，更新快取 |
 | 14:05 | 執行多因子評分，寫入 DB |
-| 14:30 | 推播 LINE Notify Top 10 |
+| 14:30 | 推播 LINE Messaging API Top 10 |
 | 23:00 | 美股盤後更新（預留） |
 
 ---
