@@ -326,7 +326,7 @@ def _upsert_score(db: Session, r: dict) -> None:
                  margin_score, macro_score, rank, breakdown)
             VALUES
                 (:score_date, :stock_id, :total_score, :tech_score, :inst_score,
-                 :margin_score, :macro_score, :rank, :breakdown::jsonb)
+                 :margin_score, :macro_score, :rank, CAST(:breakdown AS jsonb))
             ON CONFLICT (score_date, stock_id)
             DO UPDATE SET
                 total_score = EXCLUDED.total_score,
