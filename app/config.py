@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # LINE Messaging API
     line_channel_access_token: str = Field(default="")
+    line_channel_secret: str = Field(default="")       # For webhook signature verification
     line_user_id: str = Field(default="")  # User ID or Group ID to push messages to
 
     # Telegram
