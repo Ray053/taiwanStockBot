@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import scores, stocks, macro, admin
+from app.routers import scores, stocks, macro, admin, linebot
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -62,6 +62,7 @@ app.include_router(scores.router, prefix="/api/v1")
 app.include_router(stocks.router, prefix="/api/v1")
 app.include_router(macro.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
+app.include_router(linebot.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health", tags=["health"])
