@@ -14,19 +14,46 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Top ~100 TWSE stocks by market cap — only these will be set is_active=TRUE
+# Covers semiconductors, financials, shipping, electronics, telecom, retail
+TOP_ACTIVE_STOCKS = {
+    # Semiconductors / IC Design
+    "2330", "2454", "2303", "3711", "2408", "3034", "6415", "2344", "2337",
+    "3044", "3037", "2379", "2458", "6770", "3533", "6669",
+    # Electronics / ODM / OEM
+    "2317", "2382", "2357", "4938", "2324", "2353", "2356", "2376", "2383",
+    "2301", "2308", "2385", "2395", "2409", "2474", "2492", "3481", "2439",
+    "2451", "4958", "2360",
+    # Financials
+    "2882", "2881", "2886", "2891", "2884", "5880", "2885", "2892", "2883",
+    "2887", "2890", "2801", "2880", "2888", "5876", "5871",
+    # Shipping / Transport
+    "2603", "2609", "2615", "2618", "2610",
+    # Telecom
+    "2412", "3045", "4904",
+    # Petrochemicals / Materials
+    "1301", "1303", "1326", "6505", "2002", "1101", "1102",
+    # Retail / Food / Consumer
+    "1216", "2912", "2207",
+    # Other Tech / Industrial
+    "3008", "2049", "1590", "2327", "2345", "2371", "2392", "2404",
+    "2543", "2597", "5234", "6274", "6278",
+}
+
 # Fallback stock list if DB is empty
-DEFAULT_STOCK_IDS = [
-    "2330", "2317", "2454", "2308", "2412",
-    "2882", "2886", "2881", "2603", "2609",
-    "1301", "1303", "3711", "2357", "2382",
-]
+DEFAULT_STOCK_IDS = sorted(TOP_ACTIVE_STOCKS)[:15]
 
 # Rate limit: seconds between each stock API call (avoid being blocked)
 RATE_LIMIT_DELAY = 0.5
 
 
 def sync_stocks():
-    """Weekly — Fetch all TWSE listed stocks from FinMind and upsert into stocks table."""
+    """Weekly — Fetch all TWSE listed stocks from FinMind and upsert into stocks table.
+
+    Only stocks in TOP_ACTIVE_STOCKS are set is_active=TRUE to stay within
+    the free-tier FinMind API quota (~600 req/day). All others are stored
+    but inactive so users can opt-in manually.
+    """
     logger.info("Task: sync_stocks started")
     db = SessionLocal()
     try:
@@ -35,7 +62,7 @@ def sync_stocks():
             logger.warning("Task: sync_stocks — no data returned from FinMind")
             return
 
-        count = 0
+        total, activated = 0, 0
         for r in records:
             stock_id = r.get("stock_id") or r.get("StockID")
             stock_name = r.get("stock_name") or r.get("CompanyName") or ""
@@ -44,22 +71,26 @@ def sync_stocks():
             if not stock_id or not str(stock_id).isdigit() or not (4 <= len(str(stock_id)) <= 6):
                 continue
 
+            is_active = str(stock_id) in TOP_ACTIVE_STOCKS
+
             db.execute(
                 text("""
                     INSERT INTO stocks (stock_id, stock_name, sector, market, is_active)
-                    VALUES (:stock_id, :stock_name, :sector, 'TWSE', TRUE)
+                    VALUES (:stock_id, :stock_name, :sector, 'TWSE', :is_active)
                     ON CONFLICT (stock_id)
                     DO UPDATE SET
                         stock_name = EXCLUDED.stock_name,
                         sector     = EXCLUDED.sector,
-                        is_active  = TRUE
+                        is_active  = EXCLUDED.is_active
                 """),
-                {"stock_id": stock_id, "stock_name": stock_name, "sector": industry},
+                {"stock_id": stock_id, "stock_name": stock_name, "sector": industry, "is_active": is_active},
             )
-            count += 1
+            total += 1
+            if is_active:
+                activated += 1
 
         db.commit()
-        logger.info(f"Task: sync_stocks done. Upserted {count} stocks.")
+        logger.info(f"Task: sync_stocks done. Upserted {total} stocks, {activated} active.")
     except Exception as e:
         logger.error(f"Task: sync_stocks error: {e}")
         db.rollback()
