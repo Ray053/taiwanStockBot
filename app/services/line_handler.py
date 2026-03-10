@@ -96,6 +96,7 @@ def _get_today_top(limit: int = 10) -> list[dict]:
                 "stock_name": st.stock_name,
                 "total_score": float(s.total_score) if s.total_score else 0,
                 "score_date": s.score_date,
+                "reasons": (s.breakdown or {}).get("reasons", []),
             }
             for s, st in scores
         ]
@@ -121,6 +122,11 @@ def _get_stock_score(stock_id: str) -> list[dict]:
                 "rank": s.rank,
                 "total_score": float(s.total_score) if s.total_score else 0,
                 "stock_name": st.stock_name,
+                "tech_score": float(s.tech_score) if s.tech_score else 0,
+                "inst_score": float(s.inst_score) if s.inst_score else 0,
+                "margin_score": float(s.margin_score) if s.margin_score else 0,
+                "macro_score": float(s.macro_score) if s.macro_score else 0,
+                "reasons": (s.breakdown or {}).get("reasons", []),
             }
             for s, st in rows
         ]
@@ -153,17 +159,21 @@ def _get_latest_macro() -> dict | None:
 # ── Message builders ──────────────────────────────────────────────────────────
 
 def _build_top_scores_flex(scores: list[dict]) -> dict:
-    """Build a Flex Message bubble for top scores."""
+    """Build top scores message with key selection reasons."""
     if not scores:
         return _text_msg("目前尚無評分資料，請稍後再試。")
 
     score_date = scores[0]["score_date"]
     lines = [f"📊 台股選股報告 ({score_date})\n"]
     for s in scores:
-        bar = "█" * min(int(s["total_score"] / 3), 10)
-        lines.append(f"#{s['rank']:02d} {s['stock_id']} {s['stock_name'] or ''}")
-        lines.append(f"    分數 {s['total_score']:.1f}  {bar}")
-    lines.append("\n輸入股票代碼查詢個股評分")
+        bar = "█" * min(int(s["total_score"] / 10), 10)
+        lines.append(f"#{s['rank']:02d} {s['stock_id']} {s['stock_name'] or ''}  {s['total_score']:.1f}分")
+        lines.append(f"    {bar}")
+        # Show up to 2 positive reasons (✅ only) as highlights
+        positive = [r for r in s.get("reasons", []) if r.startswith("✅")][:2]
+        for r in positive:
+            lines.append(f"    {r}")
+    lines.append("\n輸入股票代碼查詢個股完整分析")
 
     return _text_msg("\n".join(lines))
 
@@ -173,10 +183,32 @@ def _build_stock_detail(stock_id: str, rows: list[dict]) -> dict:
         return _text_msg(f"找不到 {stock_id} 的評分資料（可能未在選股清單中）。")
 
     stock_name = rows[0]["stock_name"] or ""
-    lines = [f"📈 {stock_id} {stock_name} — 近 7 日評分\n"]
-    for r in rows:
-        trend = "▲" if r["total_score"] >= 10 else "▼"
-        lines.append(f"{r['score_date']}  排名#{r['rank']}  {r['total_score']:.1f}分 {trend}")
+    latest = rows[0]
+    lines = [f"📈 {stock_id} {stock_name}\n"]
+
+    # Latest day full breakdown
+    lines.append(f"📅 最新評分 {latest['score_date']}  排名 #{latest['rank']}")
+    lines.append(f"總分：{latest['total_score']:.1f}")
+    lines.append(
+        f"  技術 {latest['tech_score']:.0f}"
+        f" ｜法人 {latest['inst_score']:.0f}"
+        f" ｜籌碼 {latest['margin_score']:.0f}"
+        f" ｜宏觀 {latest['macro_score']:.0f}"
+    )
+
+    reasons = latest.get("reasons", [])
+    if reasons:
+        lines.append("\n📌 選股原因：")
+        for r in reasons:
+            lines.append(f"  {r}")
+
+    # Recent trend (skip latest, show rest)
+    if len(rows) > 1:
+        lines.append("\n📊 近期走勢：")
+        for r in rows[1:]:
+            trend = "▲" if r["total_score"] >= latest["total_score"] else "▼"
+            lines.append(f"  {r['score_date']}  {r['total_score']:.1f}分 #{r['rank']} {trend}")
+
     return _text_msg("\n".join(lines))
 
 
