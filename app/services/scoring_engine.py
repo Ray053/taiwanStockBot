@@ -125,7 +125,7 @@ def score_macro(sector: Optional[str], snapshot: Optional[MacroSnapshot]) -> tup
     reasons = []
 
     if snapshot is None:
-        return base, ["⚠️ 無宏觀快照資料"]
+        return base, []  # No macro data — use neutral 50, no reason shown
 
     sector_str = sector or ""
 
