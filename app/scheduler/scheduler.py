@@ -40,37 +40,37 @@ def create_scheduler() -> BackgroundScheduler:
         replace_existing=True,
     )
 
-    # 08:30 — Fetch institutional investors
+    # 08:30 → 改到收盤後 14:10，FinMind 三大法人當日資料收盤後才可用
     scheduler.add_job(
         fetch_institutional,
-        trigger=CronTrigger(hour=8, minute=30, timezone=TIMEZONE),
+        trigger=CronTrigger(hour=14, minute=10, timezone=TIMEZONE),
         id="fetch_institutional",
         name="Fetch institutional investors (三大法人)",
         replace_existing=True,
     )
 
-    # 09:05 — Compute signals (K-line + technical indicators)
+    # 09:05 → 改到收盤後 14:20，K線需等收盤才完整
     scheduler.add_job(
         compute_signals,
-        trigger=CronTrigger(hour=9, minute=5, timezone=TIMEZONE),
+        trigger=CronTrigger(hour=14, minute=20, timezone=TIMEZONE),
         id="compute_signals",
         name="Compute technical signals",
         replace_existing=True,
     )
 
-    # 14:05 — Run multi-factor scoring
+    # 14:05 → 14:35，等上兩個任務完成後再評分
     scheduler.add_job(
         run_scoring,
-        trigger=CronTrigger(hour=14, minute=5, timezone=TIMEZONE),
+        trigger=CronTrigger(hour=14, minute=35, timezone=TIMEZONE),
         id="run_scoring",
         name="Run multi-factor scoring",
         replace_existing=True,
     )
 
-    # 14:30 — Send notification
+    # 14:30 → 14:50
     scheduler.add_job(
         send_notification,
-        trigger=CronTrigger(hour=14, minute=30, timezone=TIMEZONE),
+        trigger=CronTrigger(hour=14, minute=50, timezone=TIMEZONE),
         id="send_notification",
         name="Send LINE/Telegram notification",
         replace_existing=True,

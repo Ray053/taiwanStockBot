@@ -34,23 +34,34 @@ def run_migrations():
 
 
 def cold_start_init():
-    """If stocks table is empty, run sync_stocks immediately to seed data."""
+    """On first deploy, seed stocks and run full FinMind pipeline if no kline data."""
     try:
         from app.database import SessionLocal
         from app.models.stock import Stock
+        from app.models.kline import DailyKline
         db = SessionLocal()
         try:
-            count = db.query(Stock).count()
+            stock_count = db.query(Stock).count()
+            kline_count = db.query(DailyKline).count()
         finally:
             db.close()
 
-        if count == 0:
-            logger.info("Cold start: stocks table empty, running sync_stocks now...")
+        # Step 1: sync stock list if empty
+        if stock_count == 0:
+            logger.info("Cold start: syncing stock list...")
             from app.scheduler.tasks import sync_stocks
             sync_stocks()
-            logger.info("Cold start sync_stocks complete.")
+
+        # Step 2: run full pipeline if no kline data (first deploy)
+        if kline_count == 0:
+            logger.info("Cold start: no kline data, running full pipeline (institutional → signals → scoring)...")
+            from app.scheduler.tasks import fetch_institutional, compute_signals, run_scoring
+            fetch_institutional()
+            compute_signals()
+            run_scoring()
+            logger.info("Cold start pipeline complete.")
         else:
-            logger.info(f"Stocks table has {count} records, skipping cold start sync.")
+            logger.info(f"Cold start: {stock_count} stocks, {kline_count} kline rows — skipping pipeline.")
     except Exception as e:
         logger.error(f"Cold start init error: {e}")
 
