@@ -1,6 +1,7 @@
 """FastAPI application factory with startup events."""
 import logging
 import subprocess
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -70,7 +71,9 @@ def cold_start_init():
 async def lifespan(app: FastAPI):
     logger.info("Starting Taiwan Stock Bot API...")
     run_migrations()
-    cold_start_init()
+
+    # Run cold start in background so health check can respond immediately
+    threading.Thread(target=cold_start_init, daemon=True, name="cold-start").start()
 
     from app.scheduler.scheduler import create_scheduler
     scheduler = create_scheduler()
