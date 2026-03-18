@@ -1,6 +1,7 @@
 """LINE Bot message handler — keyword parsing & reply building."""
 import logging
 import re
+import threading
 from datetime import date, timedelta
 
 import httpx
@@ -14,6 +15,7 @@ from app.models.macro_snapshot import MacroSnapshot
 logger = logging.getLogger(__name__)
 
 REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+PUSH_URL = "https://api.line.me/v2/bot/message/push"
 TIMEOUT = 10
 
 # ── Quick Reply buttons appended to every reply ───────────────────────────────
@@ -56,6 +58,25 @@ def _reply(reply_token: str, messages: list[dict]) -> None:
             resp.raise_for_status()
     except Exception as e:
         logger.error(f"LINE reply error: {e}")
+
+
+def _push(user_id: str, messages: list[dict]) -> None:
+    token = settings.line_channel_access_token
+    if not token or not user_id:
+        return
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            resp = client.post(
+                PUSH_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={"to": user_id, "messages": messages},
+            )
+            resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"LINE push error: {e}")
 
 
 def _text_msg(text: str, quick_reply: bool = True) -> dict:
@@ -263,23 +284,26 @@ KEYWORD_MAP = {
 }
 
 
-def handle_text_message(reply_token: str, user_text: str) -> None:
+def handle_text_message(reply_token: str, user_text: str, user_id: str = "") -> None:
     """Parse user text and reply accordingly."""
     text = user_text.strip()
     intent = KEYWORD_MAP.get(text.lower(), None)
 
     if intent == "trigger":
         _reply(reply_token, [_text_msg("⚙️ 開始執行評分，請稍候約 30 秒...", quick_reply=False)])
-        try:
-            from app.scheduler.tasks import run_scoring
-            run_scoring()
-        except Exception as e:
-            logger.error(f"Manual trigger run_scoring error: {e}")
-            _reply(reply_token, [_text_msg(f"❌ 評分執行失敗：{e}")])
-            return
-        scores = _get_today_top(10)
-        msg = _build_top_scores_flex(scores)
-        _reply(reply_token, [msg])
+
+        def _do_scoring(uid: str):
+            try:
+                from app.scheduler.tasks import run_scoring
+                run_scoring()
+                scores = _get_today_top(10)
+                msg = _build_top_scores_flex(scores)
+            except Exception as e:
+                logger.error(f"Manual trigger run_scoring error: {e}")
+                msg = _text_msg(f"❌ 評分執行失敗：{e}")
+            _push(uid, [msg])
+
+        threading.Thread(target=_do_scoring, args=(user_id,), daemon=True).start()
         return
 
     elif intent == "top":
@@ -305,6 +329,6 @@ def handle_text_message(reply_token: str, user_text: str) -> None:
     _reply(reply_token, [msg])
 
 
-def handle_postback(reply_token: str, data: str) -> None:
+def handle_postback(reply_token: str, data: str, user_id: str = "") -> None:
     """Handle postback events from buttons/menus."""
-    handle_text_message(reply_token, data)
+    handle_text_message(reply_token, data, user_id)

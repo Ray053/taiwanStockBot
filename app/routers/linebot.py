@@ -42,17 +42,19 @@ async def line_webhook(
         event_type = event.get("type")
         reply_token = event.get("replyToken", "")
 
+        user_id = event.get("source", {}).get("userId", "")
+
         if event_type == "message":
             msg = event.get("message", {})
             if msg.get("type") == "text":
-                handle_text_message(reply_token, msg.get("text", ""))
+                handle_text_message(reply_token, msg.get("text", ""), user_id)
 
         elif event_type == "postback":
             data = event.get("postback", {}).get("data", "")
-            handle_postback(reply_token, data)
+            handle_postback(reply_token, data, user_id)
 
         elif event_type == "follow":
             # New follower — send welcome message
-            handle_text_message(reply_token, "說明")
+            handle_text_message(reply_token, "說明", user_id)
 
     return {"status": "ok"}
