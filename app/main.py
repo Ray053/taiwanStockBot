@@ -1,7 +1,6 @@
 """FastAPI application factory with startup events."""
 import logging
 import subprocess
-import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -34,12 +33,43 @@ def run_migrations():
         logger.error(f"Failed to run alembic migrations: {e}")
 
 
+def cold_start_init():
+    """If stocks table is empty, run sync_stocks immediately to seed data."""
+    try:
+        from app.database import SessionLocal
+        from app.models.stock import Stock
+        db = SessionLocal()
+        try:
+            count = db.query(Stock).count()
+        finally:
+            db.close()
+
+        if count == 0:
+            logger.info("Cold start: stocks table empty, running sync_stocks now...")
+            from app.scheduler.tasks import sync_stocks
+            sync_stocks()
+            logger.info("Cold start sync_stocks complete.")
+        else:
+            logger.info(f"Stocks table has {count} records, skipping cold start sync.")
+    except Exception as e:
+        logger.error(f"Cold start init error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Taiwan Stock Bot API...")
     run_migrations()
-    logger.info("API startup complete.")
+    cold_start_init()
+
+    from app.scheduler.scheduler import create_scheduler
+    scheduler = create_scheduler()
+    scheduler.start()
+    logger.info("APScheduler started within API process.")
+
     yield
+
+    scheduler.shutdown(wait=False)
+    logger.info("APScheduler stopped.")
 
 
 app = FastAPI(
