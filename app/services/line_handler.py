@@ -235,6 +235,7 @@ def _build_help_msg() -> dict:
         "• 今日選股 → 今日 Top 10 選股\n"
         "• 宏觀 → Polymarket 宏觀信號\n"
         "• [股票代碼] → 個股評分（例：2330）\n"
+        "• 立即評分 → 手動觸發選股評分\n"
         "• 說明 → 顯示此說明\n\n"
         "📌 快速按鈕可直接點選 👇"
     )
@@ -256,6 +257,9 @@ KEYWORD_MAP = {
     "help": "help",
     "?": "help",
     "？": "help",
+    "立即評分": "trigger",
+    "觸發選股": "trigger",
+    "重新評分": "trigger",
 }
 
 
@@ -264,7 +268,21 @@ def handle_text_message(reply_token: str, user_text: str) -> None:
     text = user_text.strip()
     intent = KEYWORD_MAP.get(text.lower(), None)
 
-    if intent == "top":
+    if intent == "trigger":
+        _reply(reply_token, [_text_msg("⚙️ 開始執行評分，請稍候約 30 秒...", quick_reply=False)])
+        try:
+            from app.scheduler.tasks import run_scoring
+            run_scoring()
+        except Exception as e:
+            logger.error(f"Manual trigger run_scoring error: {e}")
+            _reply(reply_token, [_text_msg(f"❌ 評分執行失敗：{e}")])
+            return
+        scores = _get_today_top(10)
+        msg = _build_top_scores_flex(scores)
+        _reply(reply_token, [msg])
+        return
+
+    elif intent == "top":
         scores = _get_today_top(10)
         msg = _build_top_scores_flex(scores)
 
