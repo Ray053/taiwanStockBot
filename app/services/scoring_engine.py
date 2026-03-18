@@ -96,12 +96,16 @@ def score_margin(
 ) -> tuple[float, list[str]]:
     """
     Margin trading scoring (max 100).
+    - No data: 50 (neutral, no reason shown)
     - Both decrease: 100
     - One decreases: 60
     - Both increase: 20
     """
-    reasons = []
+    # No data at all → neutral, don't penalize
+    if margin_change is None and short_change is None:
+        return 50.0, []
 
+    reasons = []
     margin_dec = margin_change is not None and margin_change < 0
     short_dec = short_change is not None and short_change < 0
 
