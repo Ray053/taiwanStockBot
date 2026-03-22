@@ -1,4 +1,4 @@
-"""Technical indicator computation: MA, RSI, MACD, Volume."""
+"""Technical indicator computation: MA, RSI, MACD, KD, Volume."""
 import logging
 from typing import Optional
 
@@ -49,6 +49,37 @@ def compute_macd(
     return macd_line, signal_line, histogram
 
 
+def compute_kd(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k_period: int = 9,
+    d_period: int = 3,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Compute KD (Stochastic Oscillator) — Taiwan convention.
+
+    RSV = (close - lowest_low_k) / (highest_high_k - lowest_low_k) * 100
+    K   = SMA(RSV, d_period)   [slow %K]
+    D   = SMA(K, d_period)
+
+    Returns (k_series, d_series), values 0–100.
+    """
+    lowest_low = low.rolling(window=k_period, min_periods=k_period).min()
+    highest_high = high.rolling(window=k_period, min_periods=k_period).max()
+
+    denom = highest_high - lowest_low
+    rsv = pd.Series(index=close.index, dtype=float)
+    valid = denom > 0
+    rsv[valid] = (close[valid] - lowest_low[valid]) / denom[valid] * 100
+    # When price range is zero (flat), set RSV to 50 (neutral)
+    rsv[~valid & denom.notna()] = 50.0
+
+    k = rsv.rolling(window=d_period, min_periods=d_period).mean()
+    d = k.rolling(window=d_period, min_periods=d_period).mean()
+    return k, d
+
+
 def compute_volume_ma(volumes: pd.Series, window: int = 20) -> pd.Series:
     """Compute volume moving average."""
     return volumes.rolling(window=window, min_periods=1).mean()
@@ -57,7 +88,7 @@ def compute_volume_ma(volumes: pd.Series, window: int = 20) -> pd.Series:
 def enrich_kline_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     Given a raw K-line DataFrame with columns [date/trade_date, close, volume, open, high, low],
-    compute and append MA5, MA20, MA60, RSI14, MACD, MACD_signal columns.
+    compute and append MA5, MA20, MA60, RSI14, MACD, MACD_signal, KD_K, KD_D columns.
     Returns enriched DataFrame.
     """
     if df.empty:
@@ -85,6 +116,17 @@ def enrich_kline_df(df: pd.DataFrame) -> pd.DataFrame:
 
     df["vol_ma20"] = compute_volume_ma(volume, 20).round(0)
 
+    # KD — requires high/low columns; fall back gracefully if missing
+    if "high" in df.columns and "low" in df.columns:
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        kd_k, kd_d = compute_kd(high, low, close)
+        df["kd_k"] = kd_k.round(2)
+        df["kd_d"] = kd_d.round(2)
+    else:
+        df["kd_k"] = np.nan
+        df["kd_d"] = np.nan
+
     return df
 
 
@@ -106,10 +148,63 @@ def check_golden_cross(df: pd.DataFrame) -> bool:
     return float(prev_macd) < float(prev_sig) and float(curr_macd) >= float(curr_sig)
 
 
+def check_kd_golden_cross_low(df: pd.DataFrame, low_threshold: float = 30.0) -> bool:
+    """
+    Check if KD had a golden cross (K crossed above D) while K was in the
+    oversold zone (K < low_threshold yesterday).
+
+    This is the classic swing-trade entry signal in Taiwan stocks.
+    Requires at least 2 rows with valid kd_k / kd_d columns.
+    """
+    if len(df) < 2:
+        return False
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+    for col in ["kd_k", "kd_d"]:
+        if pd.isna(prev.get(col)) or pd.isna(curr.get(col)):
+            return False
+    prev_k = float(prev["kd_k"])
+    prev_d = float(prev["kd_d"])
+    curr_k = float(curr["kd_k"])
+    curr_d = float(curr["kd_d"])
+    # K was in oversold territory yesterday, and crossed above D today
+    return prev_k < low_threshold and prev_k < prev_d and curr_k >= curr_d
+
+
+def check_kd_dead_cross_high(df: pd.DataFrame, high_threshold: float = 70.0) -> bool:
+    """
+    Check if KD had a dead cross (K crossed below D) while K was in the
+    overbought zone (K > high_threshold yesterday).
+
+    This is a swing-trade exit / avoid-entry signal.
+    Requires at least 2 rows with valid kd_k / kd_d columns.
+    """
+    if len(df) < 2:
+        return False
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+    for col in ["kd_k", "kd_d"]:
+        if pd.isna(prev.get(col)) or pd.isna(curr.get(col)):
+            return False
+    prev_k = float(prev["kd_k"])
+    prev_d = float(prev["kd_d"])
+    curr_k = float(curr["kd_k"])
+    curr_d = float(curr["kd_d"])
+    # K was overbought yesterday, and crossed below D today
+    return prev_k > high_threshold and prev_k > prev_d and curr_k <= curr_d
+
+
 def get_latest_signals(df: pd.DataFrame) -> dict:
     """
     Extract latest-day signals from enriched K-line DataFrame.
     Returns dict with signal values for scoring.
+
+    New swing-trade signals vs original:
+    - kd_k / kd_d         : KD indicator values
+    - kd_golden_cross_low  : KD low golden cross (swing entry signal)
+    - kd_dead_cross_high   : KD high dead cross (avoid / exit signal)
+    - rsi_from_low         : RSI was oversold recently and is now recovering (≥50)
+    - rsi_overbought       : RSI > 80 (chase risk)
     """
     if df.empty:
         return {}
@@ -131,6 +226,8 @@ def get_latest_signals(df: pd.DataFrame) -> dict:
     macd_signal = safe_float(row.get("macd_signal"))
     volume = safe_float(row.get("volume"))
     vol_ma20 = safe_float(row.get("vol_ma20"))
+    kd_k = safe_float(row.get("kd_k"))
+    kd_d = safe_float(row.get("kd_d"))
 
     bull_alignment = (
         ma5 is not None
@@ -141,6 +238,14 @@ def get_latest_signals(df: pd.DataFrame) -> dict:
 
     rsi_healthy = rsi14 is not None and 50 <= rsi14 <= 70
 
+    # RSI direction: was oversold (< 40) in the past 7 bars and is now recovering (≥ 50)
+    rsi_from_low = False
+    rsi_overbought = rsi14 is not None and rsi14 > 80
+    if rsi14 is not None and rsi14 >= 50 and len(df) >= 2:
+        lookback = df.iloc[-7:]["rsi14"].dropna().astype(float)
+        if len(lookback) >= 2 and lookback.iloc[:-1].min() < 40:
+            rsi_from_low = True
+
     golden_cross = check_golden_cross(df)
 
     volume_surge = (
@@ -149,6 +254,9 @@ def get_latest_signals(df: pd.DataFrame) -> dict:
         and vol_ma20 > 0
         and volume > vol_ma20 * 1.5
     )
+
+    kd_golden_cross_low = check_kd_golden_cross_low(df)
+    kd_dead_cross_high = check_kd_dead_cross_high(df)
 
     return {
         "ma5": ma5,
@@ -159,8 +267,14 @@ def get_latest_signals(df: pd.DataFrame) -> dict:
         "macd_signal": macd_signal,
         "volume": volume,
         "vol_ma20": vol_ma20,
+        "kd_k": kd_k,
+        "kd_d": kd_d,
         "bull_alignment": bull_alignment,
         "rsi_healthy": rsi_healthy,
+        "rsi_from_low": rsi_from_low,
+        "rsi_overbought": rsi_overbought,
         "golden_cross": golden_cross,
         "volume_surge": volume_surge,
+        "kd_golden_cross_low": kd_golden_cross_low,
+        "kd_dead_cross_high": kd_dead_cross_high,
     }
