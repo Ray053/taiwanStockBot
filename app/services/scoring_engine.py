@@ -1,6 +1,6 @@
 """Multi-factor weighted scoring engine."""
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -32,23 +32,39 @@ MACRO_RULES = [
 
 def score_technical(signals: dict) -> tuple[float, list[str]]:
     """
-    Technical scoring (max 100).
-    - MA bull alignment: +40
-    - RSI 50~70: +25
-    - MACD golden cross today: +20
-    - Volume > 20d avg * 1.5: +15
+    Technical scoring (max 100) — swing-trade optimised.
+
+    Score breakdown:
+    - MA5 > MA20 > MA60 bull alignment      : +30
+    - RSI (direction-aware):
+        from oversold (<40 recently) → ≥50  : +25  ← wave just starting
+        healthy 50–70 (no from-low context) : +15
+        overbought > 80                     : -20 penalty
+    - MACD golden cross today               : +20
+    - Volume surge (> 20d avg × 1.5)        : +15
+    - KD low golden cross (K<30 → K>D)      : +10
+    - KD high dead cross  (K>70 → K<D)      : -10 penalty
+
+    Max reachable = 30 + 25 + 20 + 15 + 10 = 100
     """
     score = 0.0
     reasons = []
 
     if signals.get("bull_alignment"):
-        score += 40
+        score += 30
         reasons.append("✅ 均線多頭排列")
 
     rsi = signals.get("rsi14")
-    if rsi is not None and 50 <= rsi <= 70:
-        score += 25
-        reasons.append(f"✅ RSI 強勢健康 ({rsi:.1f})")
+    if rsi is not None:
+        if rsi > 80:
+            score -= 20
+            reasons.append(f"❌ RSI 超買警示 ({rsi:.1f})，追高風險")
+        elif signals.get("rsi_from_low") and 50 <= rsi <= 70:
+            score += 25
+            reasons.append(f"✅ RSI 從低檔反彈啟動 ({rsi:.1f})")
+        elif 50 <= rsi <= 70:
+            score += 15
+            reasons.append(f"✅ RSI 強勢健康 ({rsi:.1f})")
 
     if signals.get("golden_cross"):
         score += 20
@@ -58,36 +74,75 @@ def score_technical(signals: dict) -> tuple[float, list[str]]:
         score += 15
         reasons.append("✅ 量能放大")
 
-    return score, reasons
+    if signals.get("kd_golden_cross_low"):
+        score += 10
+        kd_k = signals.get("kd_k")
+        kd_d = signals.get("kd_d")
+        label = f"K={kd_k:.1f}, D={kd_d:.1f}" if kd_k is not None and kd_d is not None else ""
+        reasons.append(f"✅ KD 低檔金叉（波段起點）{label}")
+
+    if signals.get("kd_dead_cross_high"):
+        score -= 10
+        kd_k = signals.get("kd_k")
+        label = f"K={kd_k:.1f}" if kd_k is not None else ""
+        reasons.append(f"❌ KD 高檔死叉（避免追高）{label}")
+
+    return max(0.0, min(100.0, score)), reasons
 
 
 def score_institutional(
     foreign_net: Optional[int],
     trust_net: Optional[int],
     dealer_net: Optional[int],
+    foreign_consec: int = 0,
+    trust_consec: int = 0,
 ) -> tuple[float, list[str]]:
     """
     Institutional scoring (max 100).
-    - Foreign buy: +40
-    - Trust buy: +40
-    - Dealer buy: +20
+
+    Base (single-day buy):
+    - Foreign buy  : +40
+    - Trust buy    : +40
+    - Dealer buy   : +20
+
+    Consecutive-day bonus (added on top of base if buying today):
+    - Foreign 3–4 consecutive days : +8
+    - Foreign 5+ consecutive days  : +15
+    - Trust  3–4 consecutive days  : +5
+    - Trust  5+ consecutive days   : +10
+
+    Capped at 100.
     """
     score = 0.0
     reasons = []
 
     if foreign_net is not None and foreign_net > 0:
         score += 40
-        reasons.append(f"✅ 外資買超 +{foreign_net:,} 張")
+        if foreign_consec >= 5:
+            score += 15
+            reasons.append(f"✅ 外資連續 {foreign_consec} 日買超 +{foreign_net:,} 張（主力建倉）")
+        elif foreign_consec >= 3:
+            score += 8
+            reasons.append(f"✅ 外資連續 {foreign_consec} 日買超 +{foreign_net:,} 張")
+        else:
+            reasons.append(f"✅ 外資買超 +{foreign_net:,} 張")
 
     if trust_net is not None and trust_net > 0:
         score += 40
-        reasons.append(f"✅ 投信買超 +{trust_net:,} 張")
+        if trust_consec >= 5:
+            score += 10
+            reasons.append(f"✅ 投信連續 {trust_consec} 日買超 +{trust_net:,} 張（持續佈局）")
+        elif trust_consec >= 3:
+            score += 5
+            reasons.append(f"✅ 投信連續 {trust_consec} 日買超 +{trust_net:,} 張")
+        else:
+            reasons.append(f"✅ 投信買超 +{trust_net:,} 張")
 
     if dealer_net is not None and dealer_net > 0:
         score += 20
         reasons.append(f"✅ 自營商買超 +{dealer_net:,} 張")
 
-    return score, reasons
+    return min(100.0, score), reasons
 
 
 def score_margin(
@@ -245,6 +300,21 @@ def compute_total_score(
     return round(total, 2)
 
 
+def _count_consecutive_buying(records: list, field: str) -> int:
+    """
+    Count the number of consecutive days (most recent first) where `field` > 0.
+    `records` should be ordered by trade_date descending.
+    """
+    count = 0
+    for rec in records:
+        val = getattr(rec, field, None)
+        if val is not None and int(val) > 0:
+            count += 1
+        else:
+            break
+    return count
+
+
 def run_scoring(db: Session, score_date: Optional[date] = None) -> list[dict]:
     """
     Run full multi-factor scoring for all active stocks on score_date.
@@ -267,11 +337,20 @@ def run_scoring(db: Session, score_date: Optional[date] = None) -> list[dict]:
         logger.warning("No active stocks found for scoring.")
         return []
 
+    # Batch-fetch yesterday's scores for momentum calculation
+    prev_date = score_date - timedelta(days=1)
+    prev_scores: dict[str, float] = {}
+    for ps in db.query(DailyScore).filter(DailyScore.score_date == prev_date).all():
+        prev_scores[ps.stock_id] = float(ps.total_score)
+
     results = []
 
     for stock in stocks:
         try:
-            result = _score_single_stock(db, stock, score_date, macro)
+            result = _score_single_stock(
+                db, stock, score_date, macro,
+                prev_total_score=prev_scores.get(stock.stock_id),
+            )
             if result:
                 results.append(result)
         except Exception as e:
@@ -296,9 +375,9 @@ def _score_single_stock(
     stock: Stock,
     score_date: date,
     macro: Optional[MacroSnapshot],
+    prev_total_score: Optional[float] = None,
 ) -> Optional[dict]:
-    # Fetch recent K-line data (last 120 days for indicator warmup)
-    from datetime import timedelta
+    # Fetch recent K-line data (last 180 days for indicator warmup)
     start_date = score_date - timedelta(days=180)
 
     klines = (
@@ -334,19 +413,35 @@ def _score_single_stock(
     # If indicators not pre-computed, compute them
     if df["ma5"].isna().all():
         df = enrich_kline_df(df)
+    else:
+        # KD is never pre-stored — always compute from raw OHLC
+        from app.services.signal_engine import compute_kd
+        import numpy as np
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        kd_k, kd_d = compute_kd(high, low, close)
+        df["kd_k"] = kd_k.round(2)
+        df["kd_d"] = kd_d.round(2)
 
     signals = get_latest_signals(df)
 
-    # Fetch latest institutional data
-    inst = (
+    # Fetch last 5 days of institutional data (for consecutive-buying count)
+    inst_records = (
         db.query(InstitutionalInvestors)
         .filter(
             InstitutionalInvestors.stock_id == stock.stock_id,
             InstitutionalInvestors.trade_date <= score_date,
         )
         .order_by(InstitutionalInvestors.trade_date.desc())
-        .first()
+        .limit(5)
+        .all()
     )
+
+    inst = inst_records[0] if inst_records else None
+
+    foreign_consec = _count_consecutive_buying(inst_records, "foreign_net")
+    trust_consec = _count_consecutive_buying(inst_records, "trust_net")
 
     # Fetch latest margin data
     margin = (
@@ -366,6 +461,8 @@ def _score_single_stock(
         foreign_net=int(inst.foreign_net) if inst and inst.foreign_net is not None else None,
         trust_net=int(inst.trust_net) if inst and inst.trust_net is not None else None,
         dealer_net=int(inst.dealer_net) if inst and inst.dealer_net is not None else None,
+        foreign_consec=foreign_consec,
+        trust_consec=trust_consec,
     )
 
     margin_score, margin_reasons = score_margin(
@@ -377,7 +474,24 @@ def _score_single_stock(
 
     total = compute_total_score(tech_score, inst_score, margin_score, macro_score)
 
-    all_reasons = tech_reasons + inst_reasons + margin_reasons + macro_reasons
+    # ── Score momentum bonus (swing-trade: reward rising signals) ────────────
+    momentum_reasons: list[str] = []
+    if prev_total_score is not None:
+        score_diff = total - prev_total_score
+        if score_diff >= 10:
+            total = min(100.0, round(total + 3.0, 2))
+            momentum_reasons.append(f"✅ 評分上升動能 (昨 {prev_total_score:.1f} → 今 {total:.1f})")
+        elif score_diff >= 5:
+            total = min(100.0, round(total + 1.5, 2))
+            momentum_reasons.append(f"✅ 評分小幅上升 (+{score_diff:.1f})")
+        elif score_diff <= -10:
+            total = max(0.0, round(total - 3.0, 2))
+            momentum_reasons.append(f"⚠️ 評分明顯下滑 ({score_diff:.1f})")
+        elif score_diff <= -5:
+            total = max(0.0, round(total - 1.5, 2))
+            momentum_reasons.append(f"⚠️ 評分小幅下滑 ({score_diff:.1f})")
+
+    all_reasons = tech_reasons + inst_reasons + margin_reasons + macro_reasons + momentum_reasons
 
     return {
         "score_date": score_date,
