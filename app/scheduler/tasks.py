@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from sqlalchemy import text
 
 from app.database import SessionLocal
-from app.services import finmind_client, polymarket_client, scoring_engine
+from app.services import finmind_client, polymarket_client, scoring_engine, us_market_client
 from app.services.signal_engine import enrich_kline_df
 from app.services.notifier import send_top_scores_notification
 
@@ -99,20 +99,27 @@ def sync_stocks():
 
 
 def fetch_polymarket():
-    """06:00 — Fetch Polymarket macro snapshot and save to DB."""
+    """06:00 — Fetch Polymarket macro snapshot + US market/night signals and save to DB."""
     logger.info("Task: fetch_polymarket started")
     db = SessionLocal()
     try:
         data = polymarket_client.fetch_macro_snapshot()
         today = date.today()
+
+        # Fetch overnight US market data (US closes ~05:00 Taiwan time, before this job)
+        us_data = us_market_client.fetch_us_indices()
+        night_change = us_market_client.fetch_night_session_change()
+
         db.execute(
             text("""
                 INSERT INTO macro_snapshots
                     (snapshot_date, fed_cut_prob, nvidia_beat_prob, taiwan_strait_prob,
-                     china_gdp_miss_prob, oil_above_90_prob)
+                     china_gdp_miss_prob, oil_above_90_prob,
+                     txf_night_change, sox_change, nasdaq_change, sp500_change)
                 VALUES
                     (:snapshot_date, :fed_cut_prob, :nvidia_beat_prob, :taiwan_strait_prob,
-                     :china_gdp_miss_prob, :oil_above_90_prob)
+                     :china_gdp_miss_prob, :oil_above_90_prob,
+                     :txf_night_change, :sox_change, :nasdaq_change, :sp500_change)
                 ON CONFLICT (snapshot_date)
                 DO UPDATE SET
                     fed_cut_prob        = EXCLUDED.fed_cut_prob,
@@ -120,12 +127,21 @@ def fetch_polymarket():
                     taiwan_strait_prob  = EXCLUDED.taiwan_strait_prob,
                     china_gdp_miss_prob = EXCLUDED.china_gdp_miss_prob,
                     oil_above_90_prob   = EXCLUDED.oil_above_90_prob,
+                    txf_night_change    = EXCLUDED.txf_night_change,
+                    sox_change          = EXCLUDED.sox_change,
+                    nasdaq_change       = EXCLUDED.nasdaq_change,
+                    sp500_change        = EXCLUDED.sp500_change,
                     created_at          = NOW()
             """),
-            {"snapshot_date": today, **data},
+            {
+                "snapshot_date": today,
+                **data,
+                "txf_night_change": night_change,
+                **us_data,
+            },
         )
         db.commit()
-        logger.info(f"Task: fetch_polymarket done. Data: {data}")
+        logger.info(f"Task: fetch_polymarket done. Polymarket={data}, US={us_data}, Night={night_change}")
     except Exception as e:
         logger.error(f"Task: fetch_polymarket error: {e}")
         db.rollback()
@@ -250,10 +266,48 @@ def send_notification():
 
 
 def fetch_us_afterhours():
-    """23:00 — Placeholder for US afterhours data (yfinance)."""
-    logger.info("Task: fetch_us_afterhours started (placeholder)")
-    # Future: use yfinance to update US macro signals
-    logger.info("Task: fetch_us_afterhours done")
+    """23:00 — Update today's macro_snapshot with latest US index changes.
+
+    US market closes at ~04:00-05:00 Taiwan time, so by 06:00 we already have
+    the complete data via fetch_polymarket. This 23:00 job is a supplemental
+    update that captures intraday US moves for the NEXT day's snapshot prep.
+    It upserts today's row so the values are fresh before scoring at 14:35.
+    """
+    logger.info("Task: fetch_us_afterhours started")
+    db = SessionLocal()
+    try:
+        us_data = us_market_client.fetch_us_indices()
+        night_change = us_market_client.fetch_night_session_change()
+        today = date.today()
+
+        # Only update market signal columns, preserve Polymarket probs
+        db.execute(
+            text("""
+                INSERT INTO macro_snapshots
+                    (snapshot_date, txf_night_change, sox_change, nasdaq_change, sp500_change)
+                VALUES
+                    (:snapshot_date, :txf_night_change, :sox_change, :nasdaq_change, :sp500_change)
+                ON CONFLICT (snapshot_date)
+                DO UPDATE SET
+                    txf_night_change = EXCLUDED.txf_night_change,
+                    sox_change       = EXCLUDED.sox_change,
+                    nasdaq_change    = EXCLUDED.nasdaq_change,
+                    sp500_change     = EXCLUDED.sp500_change,
+                    created_at       = NOW()
+            """),
+            {
+                "snapshot_date": today,
+                "txf_night_change": night_change,
+                **us_data,
+            },
+        )
+        db.commit()
+        logger.info(f"Task: fetch_us_afterhours done. US={us_data}, Night={night_change}")
+    except Exception as e:
+        logger.error(f"Task: fetch_us_afterhours error: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

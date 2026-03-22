@@ -11,6 +11,10 @@ class MacroSnapshotResponse(BaseModel):
     taiwan_strait_prob: Optional[float] = None
     china_gdp_miss_prob: Optional[float] = None
     oil_above_90_prob: Optional[float] = None
+    txf_night_change: Optional[float] = None
+    sox_change: Optional[float] = None
+    nasdaq_change: Optional[float] = None
+    sp500_change: Optional[float] = None
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
