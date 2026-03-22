@@ -13,4 +13,9 @@ class MacroSnapshot(Base):
     taiwan_strait_prob = Column(Numeric(5, 4))
     china_gdp_miss_prob = Column(Numeric(5, 4))
     oil_above_90_prob = Column(Numeric(5, 4))
+    # Market signals (fetched via yfinance at 06:00 after overnight close)
+    txf_night_change = Column(Numeric(6, 4))   # Taiwan night session proxy (EWT ETF % change)
+    sox_change = Column(Numeric(6, 4))          # Philadelphia Semiconductor Index % change
+    nasdaq_change = Column(Numeric(6, 4))       # NASDAQ Composite % change
+    sp500_change = Column(Numeric(6, 4))        # S&P 500 % change
     created_at = Column(DateTime, server_default=func.now())

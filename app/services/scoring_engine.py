@@ -120,9 +120,51 @@ def score_margin(
         return 20.0, reasons
 
 
+def _apply_night_session(change: float) -> tuple[float, str]:
+    """Tiered scoring for Taiwan night session proxy (EWT ETF % change)."""
+    if change > 0.01:
+        return +5.0, f"✅ 夜盤上漲 ({change:+.1%})"
+    elif change < -0.02:
+        return -15.0, f"❌ 夜盤重挫 ({change:+.1%})"
+    elif change < -0.01:
+        return -8.0, f"⚠️ 夜盤下跌 ({change:+.1%})"
+    return 0.0, ""
+
+
+def _apply_sox(change: float, sector: str) -> tuple[float, str]:
+    """SOX affects 半導體 sector."""
+    if sector != "半導體":
+        return 0.0, ""
+    if change > 0.02:
+        return +10.0, f"✅ 費半大漲 ({change:+.1%})"
+    elif change < -0.02:
+        return -15.0, f"❌ 費半重挫 ({change:+.1%})"
+    return 0.0, ""
+
+
+def _apply_nasdaq(change: float, sector: str) -> tuple[float, str]:
+    """NASDAQ affects 電子 sector."""
+    if sector != "電子":
+        return 0.0, ""
+    if change > 0.015:
+        return +8.0, f"✅ 那指大漲 ({change:+.1%})"
+    elif change < -0.015:
+        return -10.0, f"❌ 那指重挫 ({change:+.1%})"
+    return 0.0, ""
+
+
+def _apply_sp500(change: float) -> tuple[float, str]:
+    """S&P 500 is a market-wide signal affecting all sectors."""
+    if change > 0.01:
+        return +5.0, f"✅ 標普上漲 ({change:+.1%})"
+    elif change < -0.01:
+        return -8.0, f"❌ 標普下跌 ({change:+.1%})"
+    return 0.0, ""
+
+
 def score_macro(sector: Optional[str], snapshot: Optional[MacroSnapshot]) -> tuple[float, list[str]]:
     """
-    Macro scoring based on Polymarket probabilities.
+    Macro scoring based on Polymarket probabilities + US/night market signals.
     Base score: 50, then apply rules based on sector.
     """
     base = 50.0
@@ -133,6 +175,7 @@ def score_macro(sector: Optional[str], snapshot: Optional[MacroSnapshot]) -> tup
 
     sector_str = sector or ""
 
+    # ── Polymarket probability rules ──────────────────────────────────────────
     for field, threshold, applicable_sectors, delta, direction in MACRO_RULES:
         prob = getattr(snapshot, field, None)
         if prob is None:
@@ -153,6 +196,35 @@ def score_macro(sector: Optional[str], snapshot: Optional[MacroSnapshot]) -> tup
             label = label_map.get(field, field)
             icon = "✅" if delta > 0 else "❌"
             reasons.append(f"{icon} {label} ({prob_f:.0%}) → {sign}{delta} 分")
+
+    # ── US market & night session signals ─────────────────────────────────────
+    night = getattr(snapshot, "txf_night_change", None)
+    if night is not None:
+        delta, reason = _apply_night_session(float(night))
+        if reason:
+            base += delta
+            reasons.append(reason)
+
+    sox = getattr(snapshot, "sox_change", None)
+    if sox is not None:
+        delta, reason = _apply_sox(float(sox), sector_str)
+        if reason:
+            base += delta
+            reasons.append(reason)
+
+    nasdaq = getattr(snapshot, "nasdaq_change", None)
+    if nasdaq is not None:
+        delta, reason = _apply_nasdaq(float(nasdaq), sector_str)
+        if reason:
+            base += delta
+            reasons.append(reason)
+
+    sp500 = getattr(snapshot, "sp500_change", None)
+    if sp500 is not None:
+        delta, reason = _apply_sp500(float(sp500))
+        if reason:
+            base += delta
+            reasons.append(reason)
 
     score = max(0.0, min(100.0, base))
     return score, reasons
