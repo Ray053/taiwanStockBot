@@ -1,20 +1,26 @@
 """FastAPI application factory with startup events."""
 import logging
+import os
 import subprocess
 import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import scores, stocks, macro, admin, linebot
+from app.routers import scores, stocks, macro, admin, linebot, screening
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# React build output is copied here by the Dockerfile
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
 
 
 def run_migrations():
@@ -101,15 +107,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# ── API routers (must be registered before the SPA catch-all) ─────────────────
 app.include_router(scores.router, prefix="/api/v1")
 app.include_router(stocks.router, prefix="/api/v1")
 app.include_router(macro.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(linebot.router, prefix="/api/v1")
+app.include_router(screening.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health", tags=["health"])
 def health_check():
     """Service health check."""
     return {"status": "ok", "service": "taiwan-stock-bot"}
+
+
+# ── React SPA static file serving ─────────────────────────────────────────────
+# Serve Vite's /assets directory (JS chunks, CSS, images)
+_assets_dir = os.path.join(STATIC_DIR, "assets")
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="spa-assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_spa(full_path: str):
+    """Catch-all: serve index.html so React Router handles client-side navigation."""
+    index = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+    return {"detail": "Frontend not built. Run `npm run build` inside frontend/."}

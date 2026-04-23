@@ -10,9 +10,36 @@ logger = logging.getLogger(__name__)
 TIMEOUT = 15
 
 
-def _format_message(top_scores: list[dict]) -> str:
+def _format_message(data: dict | list) -> str:
+    """Format screening results for notification.
+
+    Accepts either the new categories dict (from send_notification task)
+    or a legacy list of scored stocks.
+    """
+    if isinstance(data, dict) and "categories" in data:
+        score_date = data.get("score_date", "")
+        categories = data["categories"]
+        lines = [f"📊 台股動能選股 ({score_date})\n"]
+        for cat in categories.values():
+            stocks = cat.get("stocks", [])
+            lines.append(f"{cat['emoji']} {cat['name']}")
+            if not stocks:
+                lines.append("  今日無符合個股")
+            else:
+                for s in stocks[:3]:
+                    parts = [f"  {s['stock_id']} {s['stock_name']}  {s['total_score']:.0f}分"]
+                    if s.get("foreign_net"):
+                        parts.append(f"外資+{s['foreign_net']:,}")
+                    if s.get("trust_net"):
+                        parts.append(f"投信+{s['trust_net']:,}")
+                    if s.get("trust_consec", 0) >= 3:
+                        parts.append(f"連{s['trust_consec']}日")
+                    lines.append(" ".join(parts))
+        return "\n".join(lines)
+
+    # Legacy list format
     lines = ["📊 台股每日選股報告\n"]
-    for item in top_scores:
+    for item in (data if isinstance(data, list) else []):
         rank = item.get("rank", "?")
         stock_id = item.get("stock_id", "")
         stock_name = item.get("stock_name", "")
@@ -75,12 +102,12 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def send_top_scores_notification(top_scores: list[dict]) -> None:
-    """Format and send top scores via all configured channels."""
-    if not top_scores:
+def send_top_scores_notification(data: dict | list) -> None:
+    """Format and send screening results via all configured channels."""
+    if not data:
         logger.info("No scores to notify.")
         return
 
-    message = _format_message(top_scores)
+    message = _format_message(data)
     send_line_message(message)
     send_telegram(message)

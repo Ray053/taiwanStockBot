@@ -88,6 +88,59 @@ def _text_msg(text: str, quick_reply: bool = True) -> dict:
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
 
+def _get_today_categories() -> dict:
+    """Query all scored stocks and group them into AiDEAR-style categories."""
+    from app.services.screening_engine import categorize_stocks
+
+    db = SessionLocal()
+    try:
+        today = date.today()
+        rows = (
+            db.query(DailyScore, Stock)
+            .join(Stock, DailyScore.stock_id == Stock.stock_id)
+            .filter(DailyScore.score_date == today)
+            .all()
+        )
+        if not rows:
+            yesterday = today - timedelta(days=1)
+            rows = (
+                db.query(DailyScore, Stock)
+                .join(Stock, DailyScore.stock_id == Stock.stock_id)
+                .filter(DailyScore.score_date == yesterday)
+                .all()
+            )
+        if not rows:
+            return {}
+
+        score_date = rows[0][0].score_date
+
+        # Reconstruct the scored_stocks list the screener expects
+        scored_stocks = []
+        for s, st in rows:
+            bd = s.breakdown or {}
+            scored_stocks.append({
+                "stock_id": s.stock_id,
+                "stock_name": st.stock_name,
+                "sector": st.sector,
+                "total_score": float(s.total_score) if s.total_score else 0,
+                "tech_score": float(s.tech_score) if s.tech_score else 0,
+                "inst_score": float(s.inst_score) if s.inst_score else 0,
+                "breakdown": bd,
+                "signals": bd.get("signals") or {},
+                "foreign_net": bd.get("foreign_net"),
+                "trust_net": bd.get("trust_net"),
+                "foreign_consec": bd.get("foreign_consec") or 0,
+                "trust_consec": bd.get("trust_consec") or 0,
+            })
+
+        return {
+            "score_date": score_date,
+            "categories": categorize_stocks(scored_stocks),
+        }
+    finally:
+        db.close()
+
+
 def _get_today_top(limit: int = 10) -> list[dict]:
     db = SessionLocal()
     try:
@@ -179,6 +232,36 @@ def _get_latest_macro() -> dict | None:
 
 # ── Message builders ──────────────────────────────────────────────────────────
 
+def _build_screening_flex(data: dict) -> dict:
+    """Build AiDEAR-style multi-category screening message."""
+    if not data or not data.get("categories"):
+        return _text_msg("目前尚無選股資料，請稍後再試。")
+
+    score_date = data.get("score_date", "")
+    categories = data["categories"]
+
+    lines = [f"📊 台股動能選股 ({score_date})\n"]
+
+    for cat_data in categories.values():
+        stocks = cat_data.get("stocks", [])
+        lines.append(f"{cat_data['emoji']} {cat_data['name']}")
+        if not stocks:
+            lines.append("  今日無符合個股")
+        else:
+            for s in stocks[:3]:
+                parts = [f"  {s['stock_id']} {s['stock_name']}  {s['total_score']:.0f}分"]
+                if s.get("foreign_net"):
+                    parts.append(f"外資+{s['foreign_net']:,}")
+                if s.get("trust_net"):
+                    parts.append(f"投信+{s['trust_net']:,}")
+                if s.get("trust_consec", 0) >= 3:
+                    parts.append(f"連{s['trust_consec']}日")
+                lines.append(" ".join(parts))
+
+    lines.append("\n輸入股票代碼查詢個股完整分析")
+    return _text_msg("\n".join(lines))
+
+
 def _build_top_scores_flex(scores: list[dict]) -> dict:
     """Build top scores message with key selection reasons."""
     if not scores:
@@ -190,7 +273,6 @@ def _build_top_scores_flex(scores: list[dict]) -> dict:
         bar = "█" * min(int(s["total_score"] / 10), 10)
         lines.append(f"#{s['rank']:02d} {s['stock_id']} {s['stock_name'] or ''}  {s['total_score']:.1f}分")
         lines.append(f"    {bar}")
-        # Show up to 2 positive reasons (✅ only) as highlights
         positive = [r for r in s.get("reasons", []) if r.startswith("✅")][:2]
         for r in positive:
             lines.append(f"    {r}")
@@ -296,8 +378,8 @@ def handle_text_message(reply_token: str, user_text: str, user_id: str = "") -> 
             try:
                 from app.scheduler.tasks import run_scoring
                 run_scoring()
-                scores = _get_today_top(10)
-                msg = _build_top_scores_flex(scores)
+                data = _get_today_categories()
+                msg = _build_screening_flex(data)
             except Exception as e:
                 logger.error(f"Manual trigger run_scoring error: {e}")
                 msg = _text_msg(f"❌ 評分執行失敗：{e}")
@@ -307,8 +389,8 @@ def handle_text_message(reply_token: str, user_text: str, user_id: str = "") -> 
         return
 
     elif intent == "top":
-        scores = _get_today_top(10)
-        msg = _build_top_scores_flex(scores)
+        data = _get_today_categories()
+        msg = _build_screening_flex(data)
 
     elif intent == "macro":
         macro = _get_latest_macro()

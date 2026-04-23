@@ -229,35 +229,47 @@ def run_scoring():
 
 
 def send_notification():
-    """14:30 — Send notification with top scores."""
+    """14:30 — Send notification with today's screening results."""
     logger.info("Task: send_notification started")
     db = SessionLocal()
     try:
         today = date.today()
         from app.models.daily_score import DailyScore
         from app.models.stock import Stock
+        from app.services.screening_engine import categorize_stocks
 
-        scores = (
+        rows = (
             db.query(DailyScore, Stock)
             .join(Stock, DailyScore.stock_id == Stock.stock_id)
             .filter(DailyScore.score_date == today)
-            .order_by(DailyScore.rank)
-            .limit(10)
             .all()
         )
 
-        top_scores = []
-        for score, stock in scores:
-            top_scores.append({
-                "rank": score.rank,
-                "stock_id": score.stock_id,
-                "stock_name": stock.stock_name,
-                "total_score": float(score.total_score) if score.total_score else 0,
-                "breakdown": score.breakdown or {},
+        if not rows:
+            logger.info("Task: send_notification — no scores for today, skip")
+            return
+
+        # Build scored_stocks list for categorisation
+        scored_stocks = []
+        for s, st in rows:
+            bd = s.breakdown or {}
+            scored_stocks.append({
+                "stock_id": s.stock_id,
+                "stock_name": st.stock_name,
+                "sector": st.sector,
+                "total_score": float(s.total_score) if s.total_score else 0,
+                "tech_score": float(s.tech_score) if s.tech_score else 0,
+                "inst_score": float(s.inst_score) if s.inst_score else 0,
+                "breakdown": bd,
+                "signals": bd.get("signals") or {},
+                "foreign_net": bd.get("foreign_net"),
+                "trust_net": bd.get("trust_net"),
+                "foreign_consec": bd.get("foreign_consec") or 0,
+                "trust_consec": bd.get("trust_consec") or 0,
             })
 
-        if top_scores:
-            send_top_scores_notification(top_scores)
+        categories = categorize_stocks(scored_stocks)
+        send_top_scores_notification({"score_date": today, "categories": categories})
         logger.info("Task: send_notification done")
     except Exception as e:
         logger.error(f"Task: send_notification error: {e}")
