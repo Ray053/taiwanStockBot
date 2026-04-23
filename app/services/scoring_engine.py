@@ -457,10 +457,14 @@ def _score_single_stock(
     # Score each factor
     tech_score, tech_reasons = score_technical(signals)
 
+    foreign_net_val = int(inst.foreign_net) if inst and inst.foreign_net is not None else None
+    trust_net_val = int(inst.trust_net) if inst and inst.trust_net is not None else None
+    dealer_net_val = int(inst.dealer_net) if inst and inst.dealer_net is not None else None
+
     inst_score, inst_reasons = score_institutional(
-        foreign_net=int(inst.foreign_net) if inst and inst.foreign_net is not None else None,
-        trust_net=int(inst.trust_net) if inst and inst.trust_net is not None else None,
-        dealer_net=int(inst.dealer_net) if inst and inst.dealer_net is not None else None,
+        foreign_net=foreign_net_val,
+        trust_net=trust_net_val,
+        dealer_net=dealer_net_val,
         foreign_consec=foreign_consec,
         trust_consec=trust_consec,
     )
@@ -493,6 +497,12 @@ def _score_single_stock(
 
     all_reasons = tech_reasons + inst_reasons + margin_reasons + macro_reasons + momentum_reasons
 
+    # Flatten signals to only JSON-serialisable primitives (bool/float/int/None)
+    safe_signals = {
+        k: v for k, v in signals.items()
+        if isinstance(v, (bool, int, float, type(None)))
+    }
+
     return {
         "score_date": score_date,
         "stock_id": stock.stock_id,
@@ -504,7 +514,23 @@ def _score_single_stock(
         "margin_score": round(margin_score, 2),
         "macro_score": round(macro_score, 2),
         "rank": 0,
-        "breakdown": {"reasons": all_reasons},
+        # Extra fields used by screening_engine.categorize_stocks()
+        "signals": signals,
+        "foreign_net": foreign_net_val,
+        "trust_net": trust_net_val,
+        "dealer_net": dealer_net_val,
+        "foreign_consec": foreign_consec,
+        "trust_consec": trust_consec,
+        "breakdown": {
+            "reasons": all_reasons,
+            # Persist signals + inst data so LINE bot can re-categorise from DB
+            "signals": safe_signals,
+            "foreign_net": foreign_net_val,
+            "trust_net": trust_net_val,
+            "dealer_net": dealer_net_val,
+            "foreign_consec": foreign_consec,
+            "trust_consec": trust_consec,
+        },
     }
 
 
