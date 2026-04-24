@@ -73,9 +73,30 @@ def cold_start_init():
         logger.error(f"Cold start init error: {e}")
 
 
+def build_frontend():
+    """Build React frontend if static/index.html is missing."""
+    index = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index):
+        return
+    frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+    if not os.path.isdir(frontend_dir):
+        logger.warning("frontend/ directory not found, skipping build.")
+        return
+    logger.info("Building frontend (npm install && npm run build)...")
+    try:
+        subprocess.run(["npm", "install"], cwd=frontend_dir, check=True, timeout=300)
+        subprocess.run(["npm", "run", "build"], cwd=frontend_dir, check=True, timeout=120)
+        logger.info("Frontend build complete.")
+    except FileNotFoundError:
+        logger.warning("npm not found — frontend will not be served.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Frontend build failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Taiwan Stock Bot API...")
+    build_frontend()
     run_migrations()
 
     # Run cold start in background so health check can respond immediately
@@ -123,15 +144,14 @@ def health_check():
 
 
 # ── React SPA static file serving ─────────────────────────────────────────────
-# Serve Vite's /assets directory (JS chunks, CSS, images)
-_assets_dir = os.path.join(STATIC_DIR, "assets")
-if os.path.isdir(_assets_dir):
-    app.mount("/assets", StaticFiles(directory=_assets_dir), name="spa-assets")
-
-
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_spa(full_path: str):
-    """Catch-all: serve index.html so React Router handles client-side navigation."""
+    """Catch-all: serve React SPA — assets first, then index.html fallback."""
+    # Try serving a real file from static/ (JS/CSS/images)
+    candidate = os.path.join(STATIC_DIR, full_path)
+    if full_path and os.path.isfile(candidate):
+        return FileResponse(candidate)
+    # Fall back to index.html for client-side routing
     index = os.path.join(STATIC_DIR, "index.html")
     if os.path.isfile(index):
         return FileResponse(index)
