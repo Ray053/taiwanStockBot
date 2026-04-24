@@ -1,13 +1,17 @@
 """Screening API — AiDEAR-style multi-category stock screening results."""
+import logging
+import traceback
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.daily_score import DailyScore
 from app.models.stock import Stock
 from app.services.screening_engine import categorize_stocks
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/screening", tags=["screening"])
 
@@ -42,35 +46,40 @@ def get_today_screening(db: Session = Depends(get_db)):
     Return today's stocks grouped into named screening categories.
     Falls back to yesterday if today has no data.
     """
-    today = date.today()
-    rows = (
-        db.query(DailyScore, Stock)
-        .join(Stock, DailyScore.stock_id == Stock.stock_id)
-        .filter(DailyScore.score_date == today)
-        .all()
-    )
-    score_date = today
-    if not rows:
-        yesterday = today - timedelta(days=1)
+    try:
+        today = date.today()
         rows = (
             db.query(DailyScore, Stock)
             .join(Stock, DailyScore.stock_id == Stock.stock_id)
-            .filter(DailyScore.score_date == yesterday)
+            .filter(DailyScore.score_date == today)
             .all()
         )
-        score_date = yesterday
+        score_date = today
+        if not rows:
+            yesterday = today - timedelta(days=1)
+            rows = (
+                db.query(DailyScore, Stock)
+                .join(Stock, DailyScore.stock_id == Stock.stock_id)
+                .filter(DailyScore.score_date == yesterday)
+                .all()
+            )
+            score_date = yesterday
 
-    if not rows:
-        return {"score_date": str(today), "categories": {}, "total_stocks": 0}
+        if not rows:
+            return {"score_date": str(today), "categories": {}, "total_stocks": 0}
 
-    scored_stocks = _build_scored_stocks(rows)
-    categories = categorize_stocks(scored_stocks)
+        scored_stocks = _build_scored_stocks(rows)
+        categories = categorize_stocks(scored_stocks)
 
-    return {
-        "score_date": str(score_date),
-        "categories": categories,
-        "total_stocks": len(scored_stocks),
-    }
+        return {
+            "score_date": str(score_date),
+            "categories": categories,
+            "total_stocks": len(scored_stocks),
+        }
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"screening/today error: {e}\n{tb}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/stock/{stock_id}")
