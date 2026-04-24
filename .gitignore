@@ -18,10 +18,8 @@ venv/
 *.log
 postgres_data/
 
-# Frontend node_modules (installed at build time)
+# Frontend
 frontend/node_modules/
-
-# static/ is committed — pre-built React output for Zeabur deployment
-# (Zeabur's Python buildpack does not have Node.js)
 frontend/package-lock.json
 frontend/*.tsbuildinfo
+static/
