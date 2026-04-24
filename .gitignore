@@ -22,6 +22,4 @@ postgres_data/
 frontend/node_modules/
 frontend/package-lock.json
 frontend/*.tsbuildinfo
-
-# static/ is committed — pre-built React output for Zeabur deployment
-# (Zeabur's Python buildpack does not have Node.js)
+static/
