@@ -1,32 +1,30 @@
-# ── Stage 1: Build React frontend ─────────────────────────────────────────────
-FROM node:20-slim AS frontend-builder
-
-WORKDIR /frontend
-COPY frontend/package*.json ./
-RUN npm ci
-
-COPY frontend/ ./
-# Vite outputs to ../static (relative to frontend/), i.e. /static inside this stage
-RUN npm run build
-
-
-# ── Stage 2: Python API ────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 WORKDIR /app
 
+# System deps + Node.js 20 (needed to build the React frontend)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
+        gcc libpq-dev curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Python dependencies ────────────────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# ── Frontend build ─────────────────────────────────────────────────────────────
+# Copy package files first for better layer caching
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci
 
-# Copy the built React app where FastAPI expects it
-COPY --from=frontend-builder /static /app/static
+COPY frontend/ ./frontend/
+# vite outDir is '../static' relative to frontend/ → outputs to /app/static
+RUN cd frontend && npm run build
+
+# ── Application code ───────────────────────────────────────────────────────────
+# Host repo has no static/ dir (.gitignore), so /app/static from npm build is safe
+COPY . .
 
 EXPOSE 8000
 
